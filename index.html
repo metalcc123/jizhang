@@ -34,6 +34,8 @@ body{padding:0 0 40px}
 /* summary */
 .sum{margin:14px 0 12px;display:flex;gap:10px}
 .sum .cell{flex:1;background:var(--card);border-radius:14px;padding:12px 14px}
+.sum .cell.click{cursor:pointer}
+.sum .cell.click:active{background:#ececf2}
 .sum .k{font-size:12px;color:var(--sub);margin-bottom:4px}
 .sum .v{font-size:20px;font-weight:700;letter-spacing:-.4px}
 .sum .v small{font-size:12px;font-weight:500;color:var(--sub);margin-left:2px}
@@ -142,7 +144,7 @@ tr:last-child td{border-bottom:none}
 <div class="wrap">
   <div class="sum">
     <div class="cell"><div class="k">总笔数</div><div class="v" id="statCount">0<small>笔</small></div></div>
-    <div class="cell"><div class="k">本月合计</div><div class="v" id="statMonth">¥0.00</div></div>
+    <div class="cell click" id="statCard"><div class="k" id="statLabel">本月合计 ▾</div><div class="v" id="statMonth">¥0.00</div></div>
   </div>
 
   <div class="up" id="uploader">
@@ -219,6 +221,7 @@ try{
   const raw=localStorage.getItem(KEY);
   if(raw){const o=JSON.parse(raw);records=o.records||[];cfg=Object.assign(cfg,o.cfg||{});}
 }catch(e){}
+let selMonth = cfg.selMonth || monthOf(todayStr());
 function save(){
   try{localStorage.setItem(KEY,JSON.stringify({records:records,cfg:cfg}))}
   catch(e){toast('存储空间不足，建议导出 CSV 后删除部分旧记录')}
@@ -501,9 +504,10 @@ function render(){
   });
   // 统计
   $('#statCount').innerHTML=records.length+'<small>笔</small>';
-  const cur=monthOf(todayStr());
+  const cur=selMonth||monthOf(todayStr());
   const curSum=records.filter(r=>monthOf(r.date)===cur).reduce((s,r)=>s+(Number(r.amount)||0),0);
   $('#statMonth').textContent=money(curSum);
+  $('#statLabel').textContent=fmtMonth(cur)+' 合计 ▾';
 
   if(!records.length){
     wrap.innerHTML='<div class="empty" style="margin-top:14px"><div class="big">📄</div>还没有记录<br>上传第一张付款截图开始记账</div>';
@@ -658,16 +662,32 @@ function openPicker(id,field){
   const list=field==='category'?CATS:PAYS;
   $('#pkTitle').textContent=field==='category'?'选择分类':'选择支付方式';
   $('#pkHint').textContent=field==='category'?'识别不准可以直接点下面切换':'';
+  $('#pkCustom').style.display='block';
   $('#pkOpts').innerHTML=list.map(v=>'<button class="opt'+(rec[field]===v?' on':'')+'" data-v="'+v+'">'+v+'</button>').join('');
+  $('#mask').classList.add('on');$('#picker').classList.add('on');
+}
+function openMonthPicker(){
+  const months=[...new Set(records.map(r=>monthOf(r.date)||'未分类'))].sort((a,b)=>b.localeCompare(a));
+  const cur=monthOf(todayStr());
+  if(!months.includes(cur)) months.unshift(cur);
+  pk={id:null,field:'month'};
+  $('#pkTitle').textContent='选择月份';
+  $('#pkHint').textContent='只统计该月金额，不同月份不合并';
+  $('#pkCustom').style.display='none';
+  $('#pkOpts').innerHTML=months.map(v=>'<button class="opt'+(v===selMonth?' on':'')+'" data-v="'+v+'">'+fmtMonth(v)+'</button>').join('');
   $('#mask').classList.add('on');$('#picker').classList.add('on');
 }
 function closePicker(){$('#picker').classList.remove('on');$('#mask').classList.remove('on')}
 $('#pkOpts').addEventListener('click',e=>{
   const v=e.target.dataset.v; if(!v) return;
+  if(pk.field==='month'){
+    selMonth=v;cfg.selMonth=v;save();render();closePicker();return;
+  }
   const rec=records.find(r=>r.id===pk.id);
   if(rec){rec[pk.field]=v;save();render()}
   closePicker();
 });
+$('#statCard').addEventListener('click',openMonthPicker);
 $('#pkCustom').addEventListener('click',()=>{
   const rec=records.find(r=>r.id===pk.id);
   const val=prompt(pk.field==='category'?'输入分类名称':'输入支付方式',rec?rec[pk.field]:'');
