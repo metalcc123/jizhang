@@ -73,6 +73,10 @@ tr:last-child td{border-bottom:none}
 .cell-e{width:100%;border:none;background:transparent;font:inherit;color:var(--text);
   padding:3px 4px;border-radius:6px;min-width:0}
 .cell-e.dt{font-size:12px;letter-spacing:-.2px;font-variant-numeric:tabular-nums}
+.tags{display:flex;align-items:center;gap:3px;margin:2px 0 1px 4px;font-size:10.5px;color:var(--sub);flex-wrap:wrap}
+.tag{padding:1px 6px;border-radius:6px;background:#f1f1f6;white-space:nowrap;cursor:pointer}
+.tag:active{background:#e3efff;color:var(--blue)}
+.tags .sep{opacity:.5}
 .cell-e:focus{outline:none;background:#eef6ff}
 .cell-e.amt{text-align:right;font-weight:600;font-variant-numeric:tabular-nums}
 .thumb{width:40px;height:40px;border-radius:8px;object-fit:cover;display:block;background:#eee}
@@ -112,6 +116,11 @@ tr:last-child td{border-bottom:none}
 .seg button.on{background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.1)}
 .sheet .ok{width:100%;height:46px;border:none;border-radius:12px;background:var(--blue);color:#fff;
   font-size:15px;font-weight:600;margin-top:6px;cursor:pointer}
+.opt-grid{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0 6px}
+.opt{min-width:72px;height:38px;padding:0 14px;border:none;border-radius:10px;background:#f1f1f6;
+  font-size:13.5px;color:var(--text);cursor:pointer}
+.opt.on{background:var(--blue);color:#fff}
+.opt-space{height:14px}
 /* viewer */
 .viewer{position:fixed;inset:0;background:#000;z-index:80;display:none;align-items:center;justify-content:center}
 .viewer.on{display:flex}
@@ -148,12 +157,12 @@ tr:last-child td{border-bottom:none}
 
   <div class="acts">
     <button id="btnAdd">＋ 手动记一笔</button>
-    <button id="btnCsv">导出 CSV</button>
+    <button id="btnCsv">导出 Excel</button>
   </div>
 
   <div class="tip" id="tipText">
     识别引擎：本地 OCR（图片不上传，仅在本机解析）<br>
-    数据保存在本机浏览器，清除浏览器数据会丢失，建议定期导出 CSV 备份。
+    数据保存在本机浏览器，清除浏览器数据会丢失，建议定期导出 Excel 备份。
   </div>
 </div>
 
@@ -184,13 +193,24 @@ tr:last-child td{border-bottom:none}
   </div>
 
   <button class="ok" id="btnSaveCfg">保存</button>
+  <button class="ok" id="btnCsv2" style="background:#f1f1f6;color:var(--blue);margin-top:10px">导出 CSV（备份）</button>
   <div class="hint" style="margin:12px 0 0">视觉模型接口示例：智谱 open.bigmodel.cn/api/paas/v4（glm-4v-flash）、通义 dashscope.aliyuncs.com/compatible-mode/v1（qwen-vl-max）等，Key 仅保存在本机。</div>
+</div>
+
+<div class="sheet" id="picker">
+  <div class="grab"></div>
+  <h2 id="pkTitle">选择分类</h2>
+  <div class="hint" id="pkHint"></div>
+  <div class="opt-grid" id="pkOpts"></div>
+  <button class="ok" id="pkCustom" style="background:#f1f1f6;color:var(--blue)">自定义…</button>
+  <div class="opt-space"></div>
 </div>
 
 <div class="viewer" id="viewer"><button class="close" id="viewerClose">✕</button><img id="viewerImg" alt=""></div>
 <div class="toast" id="toast"></div>
 
 <script src="https://registry.npmmirror.com/tesseract.js/5.1.1/files/dist/tesseract.min.js"></script>
+<script src="https://registry.npmmirror.com/xlsx/0.18.5/files/dist/xlsx.full.min.js"></script>
 <script>
 /* ---------- 存储 ---------- */
 const KEY='receipt_ledger_v2';
@@ -381,6 +401,37 @@ function polishDate(s){
   return '';
 }
 
+/* ---------- 分类 / 支付方式 ---------- */
+const CATS=['餐饮','交通','购物','生活缴费','娱乐','医疗','教育','转账红包','其他'];
+const PAYS=['微信支付','支付宝','云闪付','银行卡','微信零钱','花呗','现金','其他'];
+const CAT_RULES=[
+  ['转账红包',/转账|红包|亲属卡|收款/],
+  ['餐饮',/餐|饭|食|咖啡|奶茶|茶饮|烧烤|火锅|面馆|粉|汉堡|披萨|小吃|甜品|烘焙|外卖|酒馆|酒吧|星巴克|瑞幸|麦当劳|肯德基/],
+  ['交通',/地铁|公交|打车|滴滴|出租车|加油|石化|石油|停车|高速|高铁|火车|机票|航空|单车|骑行|充电桩/],
+  ['购物',/超市|商城|商场|淘宝|天猫|京东|拼多多|便利店|百货|优衣库|服饰|数码|旗舰店|专卖|药房|书店/],
+  ['生活缴费',/水费|电费|燃气|话费|宽带|物业|房租|充电|家政|快递|维修|保洁/],
+  ['娱乐',/电影|影城|游戏|KTV|会员|演出|门票|健身|剧本|游乐|景区/],
+  ['医疗',/医院|门诊|诊所|体检|口腔|药店|诊所|卫生/],
+  ['教育',/学费|课程|培训|文具|学校|考试|教育/]
+];
+function detectCat(name,text){
+  const s=String(name||'')+' '+String(text||'');
+  for(const [k,re] of CAT_RULES) if(re.test(s)) return k;
+  if(/超市|商城|购物/.test(s)) return '购物';
+  return '其他';
+}
+function detectPay(text){
+  const s=String(text||'');
+  if(/微信零钱|零钱/.test(s)) return '微信零钱';
+  if(/微信/.test(s)) return '微信支付';
+  if(/支付宝/.test(s)) return '支付宝';
+  if(/云闪付/.test(s)) return '云闪付';
+  if(/花呗/.test(s)) return '花呗';
+  if(/信用卡/.test(s)) return '银行卡';
+  if(/储蓄卡|银行卡|银行/.test(s)) return '银行卡';
+  return '其他';
+}
+
 /* ---------- 处理上传 ---------- */
 let running=false;
 async function handleFiles(files){
@@ -399,14 +450,16 @@ async function handleFiles(files){
       const src=await prepare(f);
       im.src=src.small;
       st.textContent=(cfg.engine==='api'?'视觉模型识别中…':'OCR 识别中…');
-      let data={date:'',name:'',amount:null};
+      let data={date:'',name:'',amount:null}, rawText='';
       if(cfg.engine==='api'){
         const txt=await ocrApi(src,setP);
+        rawText=txt;
         const o=parseApi(txt);
         if(o){data={date:polishDate(o.date)||'',name:o.name||'',amount:isFinite(o.amount)?o.amount:null};}
         else{ const a=parseAmount(txt),d=parseDate(txt),n=parseName(txt); data={date:d||'',name:n,amount:a}; }
       }else{
         const txt=await ocrLocal(src,setP);
+        rawText=txt;
         data={date:parseDate(txt)||'',name:parseName(txt)||'',amount:parseAmount(txt)};
       }
       setP(1);
@@ -415,6 +468,8 @@ async function handleFiles(files){
         date: cfg.auto==='amount' ? todayStr() : (data.date||todayStr()),
         name: cfg.auto==='amount' ? '' : (data.name||''),
         amount: (data.amount===null||!isFinite(data.amount))?0:+Number(data.amount.toFixed(2)),
+        category: detectCat(data.name, rawText),
+        payway: detectPay(rawText),
         img:src.small
       };
       records.push(rec);
@@ -429,7 +484,7 @@ async function handleFiles(files){
       try{
         const src=await prepare(f);
         im.src=src.small;
-        records.push({id:uid(),date:todayStr(),name:'',amount:0,img:src.small});
+        records.push({id:uid(),date:todayStr(),name:'',amount:0,category:'其他',payway:'其他',img:src.small});
         save();render();
       }catch(e){}
     }
@@ -468,7 +523,9 @@ function render(){
     arr.forEach(r=>{
       html+='<tr data-id="'+r.id+'">'+
         '<td><input class="cell-e dt" data-k="date" value="'+esc(r.date)+'" inputmode="numeric"></td>'+
-        '<td><input class="cell-e" data-k="name" value="'+esc(r.name)+'" placeholder="未填写"></td>'+
+        '<td><input class="cell-e" data-k="name" value="'+esc(r.name)+'" placeholder="未填写">'+
+          '<div class="tags"><span class="tag" data-tag="category" data-id="'+r.id+'">'+esc(r.category||'其他')+
+          '</span><span class="sep">·</span><span class="tag" data-tag="payway" data-id="'+r.id+'">'+esc(r.payway||'其他')+'</span></div></td>'+
         '<td><img class="thumb" src="'+r.img+'" data-view="'+r.id+'" alt=""></td>'+
         '<td><input class="cell-e amt" data-k="amount" value="'+(Number(r.amount)||0).toFixed(2)+'" inputmode="decimal"></td>'+
         '<td><button class="del" data-del="'+r.id+'">✕</button></td>'+
@@ -508,6 +565,8 @@ $('#tableWrap').addEventListener('change',e=>{
   save(); render();
 });
 $('#tableWrap').addEventListener('click',e=>{
+  const tg=e.target.dataset.tag;
+  if(tg){ openPicker(e.target.dataset.id,tg); return; }
   const v=e.target.dataset.view;
   if(v){
     const rec=records.find(r=>r.id===v);
@@ -536,26 +595,84 @@ window.addEventListener('paste',e=>{
   if(files.length){e.preventDefault();handleFiles(files)}
 });
 $('#btnAdd').addEventListener('click',()=>{
-  records.push({id:uid(),date:todayStr(),name:'',amount:0,img:''});
+  records.push({id:uid(),date:todayStr(),name:'',amount:0,category:'其他',payway:'其他',img:''});
   save();render();
   toast('已添加一行，可直接填写');
 });
+
+/* ---------- 导出 ---------- */
+function groupByMonth(){
+  const g={};
+  records.forEach(r=>{const m=monthOf(r.date)||'未分类';(g[m]=g[m]||[]).push(r)});
+  return g;
+}
+function buildWorkbook(){
+  const wb=XLSX.utils.book_new();
+  const groups=groupByMonth();
+  const months=Object.keys(groups).sort((a,b)=>a.localeCompare(b));
+  months.forEach(m=>{
+    const arr=groups[m].slice().sort((a,b)=>a.date<b.date?-1:1);
+    const aoa=[['日期','名称','分类','支付方式','金额(元)']];
+    arr.forEach(r=>{
+      aoa.push([r.date, r.name||'', r.category||'其他', r.payway||'其他', Number(Number(r.amount||0).toFixed(2))]);
+    });
+    const sum=arr.reduce((x,r)=>x+(Number(r.amount)||0),0);
+    aoa.push(['小计','','','',Number(sum.toFixed(2))]);
+    const ws=XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols']=[{wch:12},{wch:24},{wch:11},{wch:12},{wch:11}];
+    XLSX.utils.book_append_sheet(wb,ws,m);
+  });
+  return wb;
+}
 $('#btnCsv').addEventListener('click',()=>{
-  const groups={};
-  records.forEach(r=>{const m=monthOf(r.date)||'未分类';(groups[m]=groups[m]||[]).push(r)});
-  let txt='日期,名称,金额\r\n';
+  if(!records.length){toast('还没有记录');return}
+  if(typeof XLSX==='undefined'){toast('Excel 组件未加载，请在设置里用 CSV 导出');return}
+  const wb=buildWorkbook();
+  XLSX.writeFile(wb,'截图记账_'+todayStr()+'.xlsx');
+  toast('已按月份分表导出');
+});
+function exportCsv(){
+  if(!records.length){toast('还没有记录');return}
+  const groups=groupByMonth();
+  let txt='日期,名称,分类,支付方式,金额\r\n';
   Object.keys(groups).sort((a,b)=>a.localeCompare(b)).forEach(m=>{
-    groups[m].slice().sort((a,b)=>a.date<b.date?1:-1).forEach(r=>{
-      txt+=[r.date,'"'+(r.name||'').replace(/"/g,'""')+'"',(Number(r.amount)||0).toFixed(2)].join(',')+'\r\n';
+    groups[m].slice().sort((a,b)=>a.date<b.date?-1:1).forEach(r=>{
+      txt+=[r.date,'"'+(r.name||'').replace(/"/g,'""')+'"',r.category||'其他',r.payway||'其他',(Number(r.amount)||0).toFixed(2)].join(',')+'\r\n';
     });
     const s=groups[m].reduce((x,r)=>x+(Number(r.amount)||0),0);
-    txt+=[m+'-小计','',s.toFixed(2)].join(',')+'\r\n';
+    txt+=[m+'-小计','','','',s.toFixed(2)].join(',')+'\r\n';
   });
   const blob=new Blob(['\ufeff'+txt],{type:'text/csv;charset=utf-8'});
   const a=document.createElement('a');
   a.href=URL.createObjectURL(blob);a.download='截图记账_'+todayStr()+'.csv';
   document.body.appendChild(a);a.click();a.remove();
   setTimeout(()=>URL.revokeObjectURL(a.href),3000);
+}
+$('#btnCsv2').addEventListener('click',exportCsv);
+
+/* ---------- 分类选择器 ---------- */
+let pk={id:null,field:null};
+function openPicker(id,field){
+  pk.id=id;pk.field=field;
+  const rec=records.find(r=>r.id===id); if(!rec) return;
+  const list=field==='category'?CATS:PAYS;
+  $('#pkTitle').textContent=field==='category'?'选择分类':'选择支付方式';
+  $('#pkHint').textContent=field==='category'?'识别不准可以直接点下面切换':'';
+  $('#pkOpts').innerHTML=list.map(v=>'<button class="opt'+(rec[field]===v?' on':'')+'" data-v="'+v+'">'+v+'</button>').join('');
+  $('#mask').classList.add('on');$('#picker').classList.add('on');
+}
+function closePicker(){$('#picker').classList.remove('on');$('#mask').classList.remove('on')}
+$('#pkOpts').addEventListener('click',e=>{
+  const v=e.target.dataset.v; if(!v) return;
+  const rec=records.find(r=>r.id===pk.id);
+  if(rec){rec[pk.field]=v;save();render()}
+  closePicker();
+});
+$('#pkCustom').addEventListener('click',()=>{
+  const rec=records.find(r=>r.id===pk.id);
+  const val=prompt(pk.field==='category'?'输入分类名称':'输入支付方式',rec?rec[pk.field]:'');
+  if(val&&val.trim()&&rec){rec[pk.field]=val.trim().slice(0,10);save();render()}
+  closePicker();
 });
 
 /* ---------- 设置 ---------- */
@@ -573,7 +690,7 @@ function setSeg(v){
   $('#apiFields').style.display=v==='api'?'block':'none';
 }
 $('#btnSettings').addEventListener('click',openSheet);
-$('#mask').addEventListener('click',closeSheet);
+$('#mask').addEventListener('click',()=>{closeSheet();closePicker()});
 document.querySelectorAll('#segEngine button').forEach(b=>b.addEventListener('click',()=>setSeg(b.dataset.engine)));
 $('#btnSaveCfg').addEventListener('click',()=>{
   const eng=document.querySelector('#segEngine button.on').dataset.engine;
@@ -581,7 +698,7 @@ $('#btnSaveCfg').addEventListener('click',()=>{
   cfg.key=$('#inKey').value.trim();cfg.auto=$('#inAuto').value;
   save();closeSheet();
   $('#tipText').innerHTML=(cfg.engine==='api'?'识别引擎：视觉模型接口（'+esc(cfg.model||'未设置')+'）':'识别引擎：本地 OCR（图片不上传，仅在本机解析）')+
-    '<br>数据保存在本机浏览器，清除浏览器数据会丢失，建议定期导出 CSV 备份。';
+    '<br>数据保存在本机浏览器，清除浏览器数据会丢失，建议定期导出 Excel 备份。';
   toast('设置已保存');
 });
 render();
