@@ -47,6 +47,10 @@ body{padding:0 0 40px}
 .up .t{font-size:15px;font-weight:600;margin-bottom:4px}
 .up .s{font-size:12.5px;color:var(--sub);line-height:1.6}
 .up.on{border-color:var(--blue)}
+.up-tools{margin-top:10px}
+.mini{height:32px;padding:0 12px;border:none;border-radius:9px;background:#eef4ff;color:var(--blue);
+  font-size:12.5px;font-weight:600;cursor:pointer}
+.mini:active{background:#dfeaff}
 #file{display:none}
 /* task list */
 .tasks{margin-top:10px;display:flex;flex-direction:column;gap:8px}
@@ -129,6 +133,23 @@ tr:last-child td{border-bottom:none}
 .viewer img{max-width:100%;max-height:100%;object-fit:contain}
 .viewer .close{position:absolute;top:calc(14px + env(safe-area-inset-top));right:14px;width:36px;height:36px;
   border:none;border-radius:50%;background:rgba(255,255,255,.2);color:#fff;font-size:18px}
+/* crop */
+#cropModal{position:fixed;inset:0;z-index:85;background:rgba(0,0,0,.94);display:none;
+  flex-direction:column;align-items:center;justify-content:center;padding:0 12px 96px;
+  touch-action:none}
+#cropModal.on{display:flex}
+.crop-head{color:#8e8e93;font-size:12.5px;margin-bottom:10px}
+.crop-wrap{position:relative;display:inline-block;line-height:0;max-width:94vw}
+.crop-wrap img{display:block;max-width:94vw;max-height:64vh;object-fit:contain;user-select:none;
+  -webkit-user-select:none;-webkit-touch-callout:none;pointer-events:none}
+.crop-rect{position:absolute;border:2px solid var(--blue);background:rgba(0,122,255,.18);
+  border-radius:2px;display:none;pointer-events:none}
+.crop-bar{position:fixed;left:0;right:0;bottom:calc(18px + env(safe-area-inset-bottom));
+  display:flex;gap:10px;justify-content:center;padding:0 16px}
+.crop-bar button{height:44px;padding:0 18px;border:none;border-radius:12px;
+  background:rgba(255,255,255,.16);color:#fff;font-size:14px;font-weight:600;cursor:pointer}
+.crop-bar button:active{opacity:.8}
+.crop-bar #cropDo{background:var(--blue)}
 .toast{position:fixed;left:50%;bottom:60px;transform:translateX(-50%) translateY(10px);background:rgba(0,0,0,.82);
   color:#fff;font-size:13px;padding:10px 16px;border-radius:10px;opacity:0;transition:.2s;z-index:90;max-width:86%;text-align:center}
 .toast.on{opacity:1;transform:translateX(-50%)}
@@ -150,9 +171,11 @@ tr:last-child td{border-bottom:none}
   <div class="up" id="uploader">
     <div class="big">🧾</div>
     <div class="t">上传付款截图，自动识别金额</div>
-    <div class="s">点击选择 · 拖拽图片 · ⌘V / 长按粘贴<br>支持多张，逐张识别</div>
+    <div class="s">点击选择 · 拖拽图片 · ⌘V / 长按粘贴<br>一张图里有多笔付款，会自动拆成多行</div>
+    <div class="up-tools"><button class="mini" id="btnCropPick">✂ 框选区域识别</button></div>
   </div>
   <input type="file" id="file" accept="image/*" multiple>
+  <input type="file" id="file2" accept="image/*">
 
   <div class="tasks" id="tasks"></div>
   <div id="tableWrap"></div>
@@ -209,6 +232,19 @@ tr:last-child td{border-bottom:none}
 </div>
 
 <div class="viewer" id="viewer"><button class="close" id="viewerClose">✕</button><img id="viewerImg" alt=""></div>
+
+<div id="cropModal">
+  <div class="crop-head">拖动框选要识别的那一块</div>
+  <div class="crop-wrap" id="cropWrap">
+    <img id="cropImg" alt="">
+    <div class="crop-rect" id="cropRect"></div>
+  </div>
+  <div class="crop-bar">
+    <button id="cropCancel">取消</button>
+    <button id="cropAll">整张识别</button>
+    <button id="cropDo">识别选区</button>
+  </div>
+</div>
 <div class="toast" id="toast"></div>
 
 <script src="https://registry.npmmirror.com/tesseract.js/5.1.1/files/dist/tesseract.min.js"></script>
@@ -435,8 +471,117 @@ function detectPay(text){
   return '其他';
 }
 
+/* ---------- OCR 结构化解析 ---------- */
+function unionBox(a,b){
+  return {x0:Math.min(a.x0,b.x0),y0:Math.min(a.y0,b.y0),x1:Math.max(a.x1,b.x1),y1:Math.max(a.y1,b.y1)};
+}
+function groupLines(lines){
+  const ls=(lines||[]).filter(l=>l.text&&l.text.trim()).map(l=>({text:l.text.trim(),bbox:l.bbox}));
+  if(!ls.length) return [];
+  ls.sort((a,b)=>a.bbox.y0-b.bbox.y0);
+  const hs=ls.map(l=>Math.abs(l.bbox.y1-l.bbox.y0)).sort((a,b)=>a-b);
+  const medH=hs[Math.floor(hs.length/2)]||18;
+  const blocks=[]; let cur=[];
+  ls.forEach(l=>{
+    if(cur.length){
+      const prev=cur[cur.length-1];
+      if(l.bbox.y0-prev.bbox.y1>medH*1.05){blocks.push(cur);cur=[]}
+    }
+    cur.push(l);
+  });
+  if(cur.length) blocks.push(cur);
+  return blocks.map(b=>({
+    text:b.map(x=>x.text).join(' '),
+    bbox:b.reduce((a,x)=>a?unionBox(a,x.bbox):x.bbox,null)
+  }));
+}
+const KW_TOTAL=/合计|总计|小计|累计|共计|汇总|优惠|立减|红包|余额|额度|可用|手续费/;
+const KW_HEAD=/微信支付|支付宝|云闪付|账单|明细|全部|记录|本月|今日|昨天|收支|统计|详情/;
+const KW_NOISE=/^(微信支付|支付宝|云闪付|账单|详情|全部|记录|交易|支付成功|付款成功|本月|今日|昨天|查看|更多)$/;
+function rowName(text){
+  let s=String(text||'');
+  s=s.replace(/20\d{2}[-\/年.]\d{1,2}[-\/月.]\d{1,2}[日]?/g,' ');
+  s=s.replace(/\d{1,2}:\d{2}(:\d{2})?/g,' ');
+  s=s.replace(/[¥￥]?\s*-?\d{1,3}(,\d{3})*(\.\d{1,2})?\s*(元)?/g,' ');
+  const words=s.split(/[\s\-·:：,，|/]+/).filter(Boolean)
+    .filter(w=>KW_NOISE.test(w)===false)
+    .filter(w=>/[\u4e00-\u9fa5]/.test(w)&&w.length>=2&&w.length<=18);
+  return words.length?words.join(' '):'';
+}
+function rowsFromOcr(d, oc, src){
+  const blocks=groupLines(d.lines);
+  // 无金额的块并入下一块（商户名常在金额上方）
+  const merged=[];
+  for(let i=0;i<blocks.length;i++){
+    let b=blocks[i];
+    if(parseAmount(b.text)===null && KW_HEAD.test(b.text)) continue;
+    while(i+1<blocks.length && parseAmount(b.text)===null){
+      b={text:b.text+' '+blocks[i+1].text, bbox:unionBox(b.bbox,blocks[i+1].bbox)};
+      i++;
+    }
+    merged.push(b);
+  }
+  const items=[];
+  merged.forEach(b=>{
+    if(KW_TOTAL.test(b.text)) return;
+    const amt=parseAmount(b.text);
+    if(amt===null) return;
+    items.push({text:b.text,bbox:b.bbox,amount:amt,
+      date:parseDate(b.text)||parseDate(d.text)||'',
+      pay:(detectPay(b.text)!=='其他'?detectPay(b.text):detectPay(d.text)),
+      name:parseName(b.text)||rowName(b.text)});
+  });
+  if(items.length>=2){
+    return items.map(it=>({date:it.date,name:it.name,amount:it.amount,text:it.text,pay:it.pay,
+      img:cropThumb(src,oc,it.bbox)}));
+  }
+  const t=d.text||'';
+  const one=items.length===1?items[0]:null;
+  return [{date:(one&&one.date)||parseDate(t)||'', name:(one&&one.name)||parseName(t)||'',
+    amount:one?one.amount:parseAmount(t), text:t, pay:detectPay(t), img:src.small, bbox:null}];
+}
+function cropThumb(src, oc, bbox){
+  if(!bbox) return src.small;
+  const sx=src.canvas.width/oc.width, sy=src.canvas.height/oc.height;
+  const pad=Math.round(oc.height*0.015);
+  const x0=Math.max(0,(bbox.x0-pad)*sx), y0=Math.max(0,(bbox.y0-pad)*sy);
+  const x1=Math.min(src.canvas.width,(bbox.x1+pad)*sx), y1=Math.min(src.canvas.height,(bbox.y1+pad)*sy);
+  const w=x1-x0,h=y1-y0;
+  if(w<20||h<20) return src.small;
+  const scale=Math.min(1,720/w);
+  const c=document.createElement('canvas');
+  c.width=Math.max(1,Math.round(w*scale));c.height=Math.max(1,Math.round(h*scale));
+  c.getContext('2d').drawImage(src.canvas,x0,y0,w,h,0,0,c.width,c.height);
+  return c.toDataURL('image/jpeg',0.7);
+}
+async function ocrAnalyze(src,onProg){
+  if(typeof Tesseract==='undefined') throw new Error('OCR 引擎加载失败，请检查网络后刷新');
+  const w0=await getWorker(onProg);
+  const oc=ocrCanvas(src);
+  const r=await w0.recognize(oc);
+  const d=r.data||{};
+  return {text:d.text||'', lines:d.lines||[], ocrCanvas:oc};
+}
+function makeRec(row){
+  return {
+    id:uid(),
+    date: cfg.auto==='amount' ? todayStr() : (row.date||todayStr()),
+    name: cfg.auto==='amount' ? '' : (row.name||''),
+    amount: (row.amount===null||!isFinite(row.amount))?0:+Number(row.amount.toFixed(2)),
+    category: detectCat(row.name,row.text),
+    payway: row.pay || detectPay(row.text),
+    img: row.img
+  };
+}
+function addRows(rows){
+  if(!rows||!rows.length){toast('没识别到金额，可手动补一行或重新框选');return 0}
+  rows.forEach(r=>records.push(makeRec(r)));
+  save();render();
+  toast(rows.length>1?('识别到 '+rows.length+' 笔，已分行'):('已识别 '+money(rows[0].amount)));
+  return rows.length;
+}
+
 /* ---------- 处理上传 ---------- */
-let running=false;
 async function handleFiles(files){
   const list=[...files].filter(f=>f.type.startsWith('image/'));
   if(!list.length){toast('请选择图片文件');return}
@@ -453,37 +598,26 @@ async function handleFiles(files){
       const src=await prepare(f);
       im.src=src.small;
       st.textContent=(cfg.engine==='api'?'视觉模型识别中…':'OCR 识别中…');
-      let data={date:'',name:'',amount:null}, rawText='';
+      let rows=[];
       if(cfg.engine==='api'){
         const txt=await ocrApi(src,setP);
-        rawText=txt;
+        let data;
         const o=parseApi(txt);
-        if(o){data={date:polishDate(o.date)||'',name:o.name||'',amount:isFinite(o.amount)?o.amount:null};}
-        else{ const a=parseAmount(txt),d=parseDate(txt),n=parseName(txt); data={date:d||'',name:n,amount:a}; }
+        if(o) data={date:polishDate(o.date)||'',name:o.name||'',amount:isFinite(o.amount)?o.amount:null,text:txt};
+        else data={date:parseDate(txt)||'',name:parseName(txt),amount:parseAmount(txt),text:txt};
+        rows=[Object.assign(data,{img:src.small,bbox:null})];
       }else{
-        const txt=await ocrLocal(src,setP);
-        rawText=txt;
-        data={date:parseDate(txt)||'',name:parseName(txt)||'',amount:parseAmount(txt)};
+        const r=await ocrAnalyze(src,setP);
+        rows=rowsFromOcr(r,r.ocrCanvas,src);
       }
       setP(1);
-      const rec={
-        id:uid(),
-        date: cfg.auto==='amount' ? todayStr() : (data.date||todayStr()),
-        name: cfg.auto==='amount' ? '' : (data.name||''),
-        amount: (data.amount===null||!isFinite(data.amount))?0:+Number(data.amount.toFixed(2)),
-        category: detectCat(data.name, rawText),
-        payway: detectPay(rawText),
-        img:src.small
-      };
-      records.push(rec);
-      save();render();
-      st.textContent=data.amount===null?'已完成，金额请手动填写':'已识别 '+money(rec.amount)+' · 可点击修改';
+      const n=addRows(rows);
+      st.textContent=n>1?('识别到 '+n+' 笔，已分行'):(n?('已识别 '+money(rows[0].amount)+' · 可点击修改'):'未识别到金额');
       setTimeout(()=>rowEl.remove(),1800);
     }catch(err){
       st.textContent='识别失败：'+(err.message||err);
       st.style.color='#ff3b30';
       rowEl.querySelector('.bar2').style.display='none';
-      // 仍然保留图片，允许手工补录
       try{
         const src=await prepare(f);
         im.src=src.small;
@@ -494,6 +628,76 @@ async function handleFiles(files){
   }
 }
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+
+/* ---------- 框选识别 ---------- */
+let cropState={file:null,rect:null,busy:false,drag:false,start:null};
+function openCrop(file){
+  cropState.file=file;cropState.rect=null;cropState.drag=false;cropState.start=null;
+  $('#cropRect').style.display='none';
+  $('#cropImg').src=URL.createObjectURL(file);
+  $('#cropModal').classList.add('on');
+}
+function closeCrop(){$('#cropModal').classList.remove('on');cropState.rect=null;cropState.drag=false;cropState.start=null}
+function relPos(e){
+  const r=$('#cropImg').getBoundingClientRect();
+  return {x:e.clientX-r.left,y:e.clientY-r.top,w:r.width,h:r.height};
+}
+function paintRect(r){
+  const el=$('#cropRect');
+  el.style.display='block';
+  el.style.left=r.x+'px';el.style.top=r.y+'px';
+  el.style.width=r.w+'px';el.style.height=r.h+'px';
+}
+$('#cropWrap').addEventListener('pointerdown',e=>{
+  if(cropState.busy) return;
+  const p=relPos(e);
+  if(p.x<0||p.y<0||p.x>p.w||p.y>p.h) return;
+  e.preventDefault();
+  cropState.drag=true;cropState.start=p;
+  paintRect({x:p.x,y:p.y,w:0,h:0});
+});
+$('#cropWrap').addEventListener('pointermove',e=>{
+  if(!cropState.drag||!cropState.start) return;
+  e.preventDefault();
+  const p=relPos(e),s=cropState.start;
+  const x=Math.max(0,Math.min(s.x,p.x)), y=Math.max(0,Math.min(s.y,p.y));
+  const w=Math.min(Math.abs(p.x-s.x),p.w-x), h=Math.min(Math.abs(p.y-s.y),p.h-y);
+  cropState.rect={x:x,y:y,w:w,h:h};
+  paintRect(cropState.rect);
+});
+window.addEventListener('pointerup',()=>{cropState.drag=false});
+async function doCrop(useAll){
+  if(!cropState.file||cropState.busy) return;
+  const r=cropState.rect;
+  if(!useAll&&(!r||r.w<24||r.h<24)){toast('请先在图上拖动框选一块区域');return}
+  cropState.busy=true;
+  const btn=$('#cropDo'); btn.textContent='识别中…'; btn.disabled=true;
+  try{
+    const src=await prepare(cropState.file);
+    let target=src;
+    if(!useAll){
+      const imgRect=$('#cropImg').getBoundingClientRect();
+      const k=src.canvas.width/imgRect.width;
+      const x=Math.max(0,Math.round(r.x*k)), y=Math.max(0,Math.round(r.y*k));
+      const w=Math.min(src.canvas.width-x,Math.round(r.w*k)), h=Math.min(src.canvas.height-y,Math.round(r.h*k));
+      if(w>16&&h>16){
+        const c=document.createElement('canvas');c.width=w;c.height=h;
+        c.getContext('2d').drawImage(src.canvas,x,y,w,h,0,0,w,h);
+        target={canvas:c,w:w,h:h,small:c.toDataURL('image/jpeg',0.7)};
+      }
+    }
+    const res=await ocrAnalyze(target,()=>{});
+    const rows=rowsFromOcr(res,res.ocrCanvas,target);
+    addRows(rows);
+    closeCrop();
+  }catch(e){toast('识别失败：'+(e.message||e))}
+  cropState.busy=false; btn.textContent='识别选区'; btn.disabled=false;
+}
+$('#btnCropPick').addEventListener('click',e=>{e.stopPropagation();$('#file2').click()});
+$('#file2').addEventListener('change',e=>{const f=e.target.files[0];if(f)openCrop(f);e.target.value=''});
+$('#cropCancel').addEventListener('click',closeCrop);
+$('#cropAll').addEventListener('click',()=>doCrop(true));
+$('#cropDo').addEventListener('click',()=>doCrop(false));
 
 /* ---------- 渲染 ---------- */
 function render(){
